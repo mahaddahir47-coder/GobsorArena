@@ -143,6 +143,7 @@ export default function BookingModal({ venue, onClose, onAddBooking, existingBoo
     if (extras.referee) selectedExtrasList.push('Match Referee ($12)');
 
     const payload = {
+      access_key: "0eb6b94a-af57-402a-b1d3-676acf30de07",
       bookingId,
       venueId: venue.id,
       venueName: venue.name,
@@ -160,7 +161,7 @@ export default function BookingModal({ venue, onClose, onAddBooking, existingBoo
       createdAt
     };
 
-    fetch('https://formspree.io/f/mgobrezj', {
+    fetch('https://api.web3forms.com/submit', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -169,16 +170,16 @@ export default function BookingModal({ venue, onClose, onAddBooking, existingBoo
       body: JSON.stringify(payload)
     })
       .then(async (res) => {
-        if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.success) {
           performLocalBooking(bookingId, createdAt);
         } else {
-          const data = await res.json().catch(() => ({}));
-          const systemMsg = data.errors ? data.errors.map((x: any) => x.message).join('. ') : 'Booking server error.';
-          setSubmitError(`Formspree submission error: ${systemMsg}. Please check details and try again.`);
+          const systemMsg = data.message || 'Booking server error.';
+          setSubmitError(`Web3Forms submission error: ${systemMsg}. Please check details and try again.`);
         }
       })
       .catch((err) => {
-        console.error('Formspree connection error:', err);
+        console.error('Web3Forms connection error:', err);
         setSubmitError('Failed to save booking. Please check your network connection and try again.');
       })
       .finally(() => {
@@ -410,7 +411,7 @@ export default function BookingModal({ venue, onClose, onAddBooking, existingBoo
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    <span>Storing booking ticket to Formspree...</span>
+                    <span>Storing booking ticket to Web3Forms...</span>
                   </>
                 ) : (
                   <>
@@ -695,7 +696,7 @@ export default function BookingModal({ venue, onClose, onAddBooking, existingBoo
             {/* Submit Button */}
             {submitError && (
               <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded-2xl p-4 text-xs font-semibold space-y-2 animate-in slide-in-from-top-1">
-                <p className="text-amber-850 leading-relaxed font-bold">⚠️ Connection Issue with Formspree Endpoint</p>
+                <p className="text-amber-850 leading-relaxed font-bold">⚠️ Connection Issue with Web3Forms Endpoint</p>
                 <p className="leading-relaxed font-normal text-amber-800">{submitError}</p>
                 <div className="flex gap-2.5 pt-1.5">
                   <button
@@ -723,7 +724,7 @@ export default function BookingModal({ venue, onClose, onAddBooking, existingBoo
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                   </svg>
-                  <span>Submitting Booking slot to Formspree...</span>
+                  <span>Submitting Booking slot to Web3Forms...</span>
                 </>
               ) : (
                 <>
