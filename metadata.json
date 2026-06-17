@@ -1,0 +1,6 @@
+{
+  "name": "GobsorArena",
+  "description": "Mogadishu's premier football pitch booking platform. Find verified turf grounds, reserve slots instantly, join community matches, and coordinate games in Somalia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
