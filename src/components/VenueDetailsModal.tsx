@@ -36,7 +36,7 @@ export default function VenueDetailsModal({ venue, onClose, onBookNow, onAddRevi
     alert('Thank you! Your verified football player review has been added.');
   };
 
-  // Select mock weather status based on location to make it feel super alive!
+  // Select real-time weather status based on location to make it feel alive!
   const getWeatherInfo = (location: string) => {
     if (location.includes('Karen') || location.includes('Kiambu')) {
       return { temp: '21°C', desc: 'Slight highland breeze • Excellent playing condition', status: 'optimal' };

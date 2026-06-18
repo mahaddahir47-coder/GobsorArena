@@ -8,6 +8,20 @@ import CommunityMatches from './components/CommunityMatches';
 import AdminPanel from './components/AdminPanel';
 import AuthModal from './components/AuthModal';
 
+import {
+  isSupabaseConfigured,
+  fetchVenuesFromSupabase,
+  insertVenueToSupabase,
+  deleteVenueFromSupabase,
+  fetchBookingsFromSupabase,
+  insertBookingToSupabase,
+  deleteBookingFromSupabase,
+  fetchMatchesFromSupabase,
+  insertMatchToSupabase,
+  joinMatchInSupabase,
+  supabase
+} from './lib/supabase';
+
 import { 
   Plus, 
   Search, 
@@ -45,13 +59,85 @@ export default function App() {
     return saved ? JSON.parse(saved) : mockMatchesList;
   });
 
-  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; phone: string; locationPreference?: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<{ name: string; email: string; phone: string; locationPreference?: string; role?: 'player' | 'admin' } | null>(() => {
     const saved = localStorage.getItem('turfoota_current_user');
     return saved ? JSON.parse(saved) : null;
   });
 
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [authModalInitialMode, setAuthModalInitialMode] = useState<'login' | 'signup'>('login');
+
+  // --- Dynamic Live Sync with Supabase ---
+  const [supabaseSyncing, setSupabaseSyncing] = useState(false);
+  const [supabaseSyncError, setSupabaseSyncError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function syncData() {
+      if (!isSupabaseConfigured) return;
+      setSupabaseSyncing(true);
+      setSupabaseSyncError(null);
+      try {
+        const v = await fetchVenuesFromSupabase();
+        if (v && v.length > 0) setVenues(v);
+        
+        const b = await fetchBookingsFromSupabase();
+        if (b) setBookings(b);
+        
+        const m = await fetchMatchesFromSupabase();
+        if (m) setMatches(m);
+      } catch (err: any) {
+        console.error("Supabase live sync error:", err);
+        setSupabaseSyncError(err.message || 'Check database connectivity');
+      } finally {
+        setSupabaseSyncing(false);
+      }
+    }
+    syncData();
+  }, []);
+
+  // Listen for Supabase Authentication State changes dynamically
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        // Fetch profile
+        try {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .single();
+
+          const mappedUser = {
+            name: profile?.name || session.user.user_metadata?.name || 'Verified Athlete',
+            email: session.user.email || '',
+            phone: profile?.phone || session.user.user_metadata?.phone || '',
+            locationPreference: profile?.location_preference || session.user.user_metadata?.locationPreference || '',
+            role: (profile?.role || session.user.user_metadata?.role || 'player') as 'player' | 'admin'
+          };
+          
+          setCurrentUser(mappedUser);
+          if (mappedUser.role === 'admin') {
+            localStorage.setItem('gobsor_admin_logged_in', 'true');
+          }
+        } catch (e) {
+          console.error("Error reading auth state user profile:", e);
+        }
+      } else {
+        // If logged out on Supabase, clear current session safely
+        if (currentUser && isSupabaseConfigured) {
+          setCurrentUser(null);
+          localStorage.removeItem('gobsor_admin_logged_in');
+        }
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
 
   useEffect(() => {
     localStorage.setItem('turfoota_venues', JSON.stringify(venues));
@@ -98,54 +184,66 @@ export default function App() {
   // --- Dispatch Event Functions ---
 
   // Placing a Reservation
-  const handleAddNewBooking = (newBooking: Booking) => {
+  const handleAddNewBooking = async (newBooking: Booking) => {
     setBookings([newBooking, ...bookings]);
     
     // Also update the nextSlot of the booked venue to make it feel highly alive
-    setVenues(prevVenues => 
-      prevVenues.map(v => {
-        if (v.id === newBooking.venueId) {
-          // Generate a newer slot dynamically so that other users see a dynamic change
-          return {
-            ...v,
-            nextSlot: 'Wed, 17 Jun at 4:30 PM' 
-          };
-        }
-        return v;
-      })
-    );
-
+    const updatedVenues = venues.map(v => {
+      if (v.id === newBooking.venueId) {
+        // Generate a newer slot dynamically so that other users see a dynamic change
+        return {
+          ...v,
+          nextSlot: 'Wed, 17 Jun at 4:30 PM' 
+        };
+      }
+      return v;
+    });
+    setVenues(updatedVenues);
     setBookingVenue(null);
+
+    // Save to Supabase if configured
+    if (isSupabaseConfigured) {
+      await insertBookingToSupabase(newBooking);
+      const targetVenue = updatedVenues.find(v => v.id === newBooking.venueId);
+      if (targetVenue) {
+        await insertVenueToSupabase(targetVenue);
+      }
+    }
   };
 
   // Cancelling an Reservation
-  const handleCancelBooking = (bookingId: string) => {
+  const handleCancelBooking = async (bookingId: string) => {
     setBookings(prev => prev.filter(b => b.id !== bookingId));
+    if (isSupabaseConfigured) {
+      await deleteBookingFromSupabase(bookingId);
+    }
   };
 
   // Submitting reviews for a pitch
-  const handleAddReview = (venueId: number, newReview: Review) => {
-    setVenues(prevVenues => 
-      prevVenues.map(v => {
-        if (v.id === venueId) {
-          const currentReviews = v.reviewsList || [];
-          const updatedReviews = [newReview, ...currentReviews];
-          const newReviewsCount = v.reviewsCount + 1;
-          
-          // Calculate running average
-          const totalRatingSum = currentReviews.reduce((sum, r) => sum + r.rating, 0) + newReview.rating;
-          const newAvgRating = Number((totalRatingSum / updatedReviews.length).toFixed(1));
+  const handleAddReview = async (venueId: number, newReview: Review) => {
+    let updatedTargetVenue: Venue | null = null;
+    const updatedVenues = venues.map(v => {
+      if (v.id === venueId) {
+        const currentReviews = v.reviewsList || [];
+        const updatedReviews = [newReview, ...currentReviews];
+        const newReviewsCount = v.reviewsCount + 1;
+        
+        // Calculate running average
+        const totalRatingSum = currentReviews.reduce((sum, r) => sum + r.rating, 0) + newReview.rating;
+        const newAvgRating = Number((totalRatingSum / updatedReviews.length).toFixed(1));
 
-          return {
-            ...v,
-            reviewsCount: newReviewsCount,
-            reviewsList: updatedReviews,
-            rating: newAvgRating
-          };
-        }
-        return v;
-      })
-    );
+        const updated = {
+          ...v,
+          reviewsCount: newReviewsCount,
+          reviewsList: updatedReviews,
+          rating: newAvgRating
+        };
+        updatedTargetVenue = updated;
+        return updated;
+      }
+      return v;
+    });
+    setVenues(updatedVenues);
 
     // Sync selected details modal so that ratings load dynamically
     setSelectedDetailsVenue(prev => {
@@ -165,25 +263,42 @@ export default function App() {
       }
       return prev;
     });
+
+    if (updatedTargetVenue && isSupabaseConfigured) {
+      await insertVenueToSupabase(updatedTargetVenue);
+    }
   };
 
   // Operator additions of a new ground
-  const handleAddVenue = (newVenue: Venue) => {
+  const handleAddVenue = async (newVenue: Venue) => {
     setVenues([newVenue, ...venues]);
     setActiveTab('admin'); // Stay inside the admin suite to show updated list!
+    if (isSupabaseConfigured) {
+      await insertVenueToSupabase(newVenue);
+    }
   };
 
-  const handleDeleteVenue = (venueId: number) => {
+  const handleDeleteVenue = async (venueId: number) => {
     setVenues(prev => prev.filter(v => String(v.id) !== String(venueId)));
+    if (isSupabaseConfigured) {
+      await deleteVenueFromSupabase(venueId);
+    }
   };
 
   // Player Finder addition
-  const handleAddMatch = (newMatch: MatchPost) => {
+  const handleAddMatch = async (newMatch: MatchPost) => {
     setMatches([newMatch, ...matches]);
+    if (isSupabaseConfigured) {
+      await insertMatchToSupabase(newMatch);
+    }
   };
 
   // Player Finder joints squad list
-  const handleJoinMatch = (matchId: string, playerName: string) => {
+  const handleJoinMatch = async (matchId: string, playerName: string) => {
+    let okToUpdate = false;
+    let updatedPlayers: string[] = [];
+    let updatedSpotsFilled = 0;
+
     setMatches(prevMatches => 
       prevMatches.map(m => {
         if (m.id === matchId) {
@@ -191,16 +306,24 @@ export default function App() {
             alert('You are already listed in the squad roster for this match!');
             return m;
           }
+          okToUpdate = true;
+          updatedPlayers = [...m.playersList, playerName];
+          updatedSpotsFilled = m.spotsFilled + 1;
           return {
             ...m,
-            playersList: [...m.playersList, playerName],
-            spotsFilled: m.spotsFilled + 1
+            playersList: updatedPlayers,
+            spotsFilled: updatedSpotsFilled
           };
         }
         return m;
       })
     );
+
+    if (okToUpdate && isSupabaseConfigured) {
+      await joinMatchInSupabase(matchId, updatedSpotsFilled, updatedPlayers);
+    }
   };
+
 
   // Clear filters helper
   const handleClearFilters = () => {

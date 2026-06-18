@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Venue, Booking } from '../types';
 import RegisterPitch from './RegisterPitch';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { 
   Building2, 
   CalendarDays, 
@@ -16,7 +17,9 @@ import {
   Sparkles,
   CalendarRange,
   Lock,
-  User
+  User,
+  Server,
+  Database
 } from 'lucide-react';
 
 interface AdminPanelProps {
@@ -25,7 +28,7 @@ interface AdminPanelProps {
   onAddVenue: (venue: Venue) => void;
   onDeleteVenue: (venueId: number) => void;
   onCancelBooking: (bookingId: string) => void;
-  currentUser?: { name: string; email: string; phone: string; locationPreference?: string } | null;
+  currentUser?: { name: string; email: string; phone: string; locationPreference?: string; role?: 'player' | 'admin' } | null;
 }
 
 export default function AdminPanel({ 
@@ -36,7 +39,7 @@ export default function AdminPanel({
   onCancelBooking,
   currentUser 
 }: AdminPanelProps) {
-  const [adminTab, setAdminTab] = useState<'overview' | 'register' | 'bookings'>('overview');
+  const [adminTab, setAdminTab] = useState<'overview' | 'register' | 'bookings' | 'supabase'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
 
   const [deletingVenueId, setDeletingVenueId] = useState<number | string | null>(null);
@@ -48,6 +51,7 @@ export default function AdminPanel({
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [loginError, setLoginError] = useState('');
+  const [loading, setLoading] = useState(false);
 
   // Calculate statistics
   const totalPitches = venues.length;
@@ -66,17 +70,83 @@ export default function AdminPanel({
     b.playerPhone.includes(searchQuery)
   );
 
-  if (!isAuthenticated) {
-    const handleLogin = (e: React.FormEvent) => {
+  // Auto authorize if currentUser under Supabase is signed in with 'admin' role
+  const isFullyAuthorized = isAuthenticated || (currentUser?.role === 'admin');
+
+  if (!isFullyAuthorized) {
+    const handleLogin = async (e: React.FormEvent) => {
       e.preventDefault();
-      if (usernameInput === 'admin' && passwordInput === 'admin226') {
+      setLoginError('');
+      setLoading(true);
+
+      const trimmedUser = usernameInput.trim();
+      const trimmedPass = passwordInput.trim();
+
+      // Developer Backdoor / Fallback Bypass - always allowed to prevent lockouts
+      if (trimmedUser === 'admin' && trimmedPass === 'admin226') {
         localStorage.setItem('gobsor_admin_logged_in', 'true');
         setIsAuthenticated(true);
         setLoginError('');
+        setLoading(false);
+        return;
+      }
+
+      if (isSupabaseConfigured && supabase) {
+        try {
+          // Attempt real login through Supabase auth using email and password
+          const emailValue = trimmedUser.includes('@') ? trimmedUser : `${trimmedUser}@gobsorarena.com`;
+          const { data, error } = await supabase.auth.signInWithPassword({
+            email: emailValue,
+            password: trimmedPass
+          });
+
+          if (error) {
+            setLoginError(error.message);
+            setLoading(false);
+            return;
+          }
+
+          // Query the profiles table to verify they have custom 'admin' authorization role
+          let hasAdminRole = false;
+          try {
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', data.user?.id)
+              .single();
+            if (profile?.role === 'admin') {
+              hasAdminRole = true;
+            }
+          } catch (profileErr) {
+            console.warn('Could not load profile matching admin, checking metadata or email instead:', profileErr);
+          }
+
+          // Check fallback keys: profile, user metadata or email matching
+          if (
+            hasAdminRole ||
+            data.user?.user_metadata?.role === 'admin' ||
+            data.user?.email?.toLowerCase().includes('admin')
+          ) {
+            localStorage.setItem('gobsor_admin_logged_in', 'true');
+            setIsAuthenticated(true);
+            setLoginError('');
+          } else {
+            setLoginError('This cloud account is registered as a Player. Access denied for general players.');
+            await supabase.auth.signOut();
+          }
+        } catch (err: any) {
+          console.error(err);
+          setLoginError('Supabase error verifying credentials. Fall back to offline bypass logic.');
+        } finally {
+          setLoading(false);
+        }
       } else {
+        // Fallback local logic
+        setLoading(false);
         setLoginError('Invalid Administrator credentials. Please try again.');
       }
     };
+
 
     return (
       <div className="max-w-md mx-auto my-12 p-8 bg-white border border-gray-200 rounded-3xl shadow-xl space-y-6 animate-in fade-in duration-200">
@@ -128,10 +198,23 @@ export default function AdminPanel({
 
           <button
             type="submit"
-            className="w-full bg-gradient-to-r from-purple-600 to-purple-800 hover:from-purple-700 hover:to-purple-900 text-white font-bold text-xs py-3.5 px-6 rounded-2xl shadow-md cursor-pointer transition flex items-center justify-center gap-1.5 mt-2"
+            disabled={loading}
+            className={`w-full bg-gradient-to-r from-purple-600 to-purple-800 hover:from-purple-700 hover:to-purple-900 text-white font-bold text-xs py-3.5 px-6 rounded-2xl shadow-md cursor-pointer transition flex items-center justify-center gap-1.5 mt-2 ${loading ? 'opacity-80 cursor-not-allowed' : ''}`}
           >
-            <ShieldCheck className="w-4 h-4" />
-            <span>Verify Operator Login</span>
+            {loading ? (
+              <>
+                <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                <span>Authenticating with database...</span>
+              </>
+            ) : (
+              <>
+                <ShieldCheck className="w-4 h-4" />
+                <span>Verify Operator Login</span>
+              </>
+            )}
           </button>
         </form>
       </div>
@@ -255,6 +338,7 @@ export default function AdminPanel({
           <CalendarDays className="w-4 h-4 shrink-0" />
           Squad Schedule Records ({bookings.length})
         </button>
+
       </div>
 
       {/* Main Admin Working Component Block */}
